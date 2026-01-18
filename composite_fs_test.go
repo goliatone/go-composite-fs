@@ -122,6 +122,76 @@ func TestCompositeFSNotExistWithMixedErrors(t *testing.T) {
 	}
 }
 
+func TestCompositeFSOpenStrictStopsOnError(t *testing.T) {
+	fs1 := permissionFS{}
+	fs2 := fstest.MapFS{
+		"ok.txt": &fstest.MapFile{
+			Data: []byte("ok"),
+		},
+	}
+
+	composite := cfs.NewCompositeFS(fs1, fs2)
+
+	_, err := composite.Open("ok.txt")
+	if err == nil {
+		t.Fatal("Expected error for permission failure, got nil")
+	}
+	if !errors.Is(err, fs.ErrPermission) {
+		t.Fatalf("Expected fs.ErrPermission, got %v", err)
+	}
+}
+
+func TestCompositeFSOpenBestEffortContinuesOnError(t *testing.T) {
+	fs1 := permissionFS{}
+	fs2 := fstest.MapFS{
+		"ok.txt": &fstest.MapFile{
+			Data: []byte("ok"),
+		},
+	}
+
+	composite := cfs.NewCompositeFSBestEffort(fs1, fs2)
+
+	testReadFile(t, composite, "ok.txt", "ok")
+}
+
+func TestCompositeFSReadFileStrictStopsOnError(t *testing.T) {
+	fs1 := permissionFS{}
+	fs2 := fstest.MapFS{
+		"ok.txt": &fstest.MapFile{
+			Data: []byte("ok"),
+		},
+	}
+
+	composite := cfs.NewCompositeFS(fs1, fs2)
+
+	_, err := composite.ReadFile("ok.txt")
+	if err == nil {
+		t.Fatal("Expected error for permission failure, got nil")
+	}
+	if !errors.Is(err, fs.ErrPermission) {
+		t.Fatalf("Expected fs.ErrPermission, got %v", err)
+	}
+}
+
+func TestCompositeFSReadFileBestEffortContinuesOnError(t *testing.T) {
+	fs1 := permissionFS{}
+	fs2 := fstest.MapFS{
+		"ok.txt": &fstest.MapFile{
+			Data: []byte("ok"),
+		},
+	}
+
+	composite := cfs.NewCompositeFSBestEffort(fs1, fs2)
+
+	data, err := composite.ReadFile("ok.txt")
+	if err != nil {
+		t.Fatalf("Expected ReadFile to succeed, got %v", err)
+	}
+	if string(data) != "ok" {
+		t.Fatalf("Expected content %q, got %q", "ok", string(data))
+	}
+}
+
 func testReadFile(t *testing.T, fsys fs.FS, name, expectedContent string) {
 	t.Helper()
 
