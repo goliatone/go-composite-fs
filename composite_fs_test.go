@@ -86,6 +86,49 @@ func TestCompositeFS(t *testing.T) {
 	}
 }
 
+func TestOverlayFSOpenDirMergesEntries(t *testing.T) {
+	fs1 := fstest.MapFS{
+		"resources/show.html": &fstest.MapFile{
+			Data: []byte("show"),
+		},
+	}
+	fs2 := fstest.MapFS{
+		"resources/form.html": &fstest.MapFile{
+			Data: []byte("form"),
+		},
+	}
+
+	overlay := cfs.NewOverlayFS(fs1, fs2)
+
+	file, err := overlay.Open("resources")
+	if err != nil {
+		t.Fatalf("Failed to open directory: %v", err)
+	}
+	defer file.Close()
+
+	dir, ok := file.(fs.ReadDirFile)
+	if !ok {
+		t.Fatalf("Expected ReadDirFile, got %T", file)
+	}
+
+	entries, err := dir.ReadDir(-1)
+	if err != nil {
+		t.Fatalf("Failed to read directory: %v", err)
+	}
+
+	names := make(map[string]bool)
+	for _, entry := range entries {
+		names[entry.Name()] = true
+	}
+
+	if !names["show.html"] {
+		t.Error("Expected directory listing to contain show.html")
+	}
+	if !names["form.html"] {
+		t.Error("Expected directory listing to contain form.html")
+	}
+}
+
 type permissionFS struct{}
 
 func (permissionFS) Open(name string) (fs.File, error) {
