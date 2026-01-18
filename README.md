@@ -162,13 +162,21 @@ type CompositeFS struct {
 
 ### Functions
 
-#### NewCompositeFS
+#### `NewCompositeFS`
 
 ```go
 func NewCompositeFS(filesystems ...fs.FS) *CompositeFS
 ```
 
-`NewCompositeFS` creates a new `CompositeFS` with the given filesystems. Filesystems will be checked in the order they are provided.
+`NewCompositeFS` creates a new `CompositeFS` with the given filesystems. Filesystems will be checked in the order they are provided. Non-`fs.ErrNotExist` errors shortcircuit.
+
+#### `NewCompositeFSBestEffort`
+
+```go
+func NewCompositeFSBestEffort(filesystems ...fs.FS) *CompositeFS
+```
+
+`NewCompositeFSBestEffort` creates a `CompositeFS` that keeps searching other filesystems even when a filesystem returns non-`fs.ErrNotExist` errors.
 
 #### ReadDir
 
@@ -234,11 +242,11 @@ func (cfs *CompositeFS) ReadFile(name string) ([]byte, error)
 
 ## Error Handling
 
-When a file cannot be found in any of the sources, **CompFS** returns a detailed error message that includes errors from each filesystem. This helps with diagnosing why the file couldn't be located.
+When a file cannot be found in any of the sources, **CompFS** returns a detailed error message that includes errors from each filesystem. Errors are classified as `fs.ErrNotExist` only when every layer reports not-exist. By default, non-`fs.ErrNotExist` errors shortcircuit; use `NewCompositeFSBestEffort` to continue searching in lower-priority layers.
 
 ## Performance Considerations
 
-- **CompFS** short-circuits on the first successful file open, minimizing filesystem checks
+- **CompFS** shortcircuits on the first successful file open, minimizing filesystem checks
 - Directory operations merge results from all filesystems
 - For best performance, put frequently accessed files in the first filesystem
 
