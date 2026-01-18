@@ -30,6 +30,7 @@ func (cfs *CompositeFS) Open(name string) (fs.File, error) {
 	name = path.Clean(name)
 
 	var errs []error
+	allNotExist := true
 
 	for i, fsys := range cfs.filesystems {
 		file, err := fsys.Open(name)
@@ -37,10 +38,18 @@ func (cfs *CompositeFS) Open(name string) (fs.File, error) {
 			return file, nil
 		}
 
+		if !errors.Is(err, fs.ErrNotExist) {
+			allNotExist = false
+		}
 		errs = append(errs, fmt.Errorf("filesystem %d: %w", i, err))
 	}
 
-	return nil, fmt.Errorf("file %q not found in any filesystem: %v", name, errors.Join(errs...))
+	joined := errors.Join(errs...)
+	if allNotExist {
+		return nil, fmt.Errorf("%w: file %q not found in any filesystem: %v", fs.ErrNotExist, name, joined)
+	}
+
+	return nil, fmt.Errorf("file %q not found in any filesystem: %v", name, joined)
 }
 
 // ReadDir returns the contents of the named directory from the
