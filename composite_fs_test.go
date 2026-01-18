@@ -2,6 +2,7 @@ package cfs_test
 
 import (
 	"embed"
+	"errors"
 	"io"
 	"io/fs"
 	"os"
@@ -82,6 +83,42 @@ func TestCompositeFS(t *testing.T) {
 	}
 	if !fileNames["nested2.txt"] {
 		t.Error("Expected dir listing to contain nested2.txt")
+	}
+}
+
+type permissionFS struct{}
+
+func (permissionFS) Open(name string) (fs.File, error) {
+	return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrPermission}
+}
+
+func TestCompositeFSNotExistError(t *testing.T) {
+	fs1 := fstest.MapFS{}
+	fs2 := fstest.MapFS{}
+
+	composite := cfs.NewCompositeFS(fs1, fs2)
+
+	_, err := composite.Open("missing.txt")
+	if err == nil {
+		t.Fatal("Expected error for missing file, got nil")
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("Expected fs.ErrNotExist, got %v", err)
+	}
+}
+
+func TestCompositeFSNotExistWithMixedErrors(t *testing.T) {
+	fs1 := fstest.MapFS{}
+	fs2 := permissionFS{}
+
+	composite := cfs.NewCompositeFS(fs1, fs2)
+
+	_, err := composite.Open("missing.txt")
+	if err == nil {
+		t.Fatal("Expected error for missing file, got nil")
+	}
+	if errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("Did not expect fs.ErrNotExist with permission error, got %v", err)
 	}
 }
 
