@@ -13,15 +13,27 @@ import (
 // until the file is found or all filesystems have been checked.
 type CompositeFS struct {
 	filesystems []fs.FS
+	bestEffort  bool
 }
 
 // NewCompositeFS creates a new CompositeFS with the given filesystems.
 // Filesystems will be checked in the order they are provided.
 func NewCompositeFS(filesystems ...fs.FS) *CompositeFS {
+	return newCompositeFS(false, filesystems...)
+}
+
+// NewCompositeFSBestEffort creates a CompositeFS that keeps searching
+// other filesystems even when a filesystem returns non-ErrNotExist errors.
+func NewCompositeFSBestEffort(filesystems ...fs.FS) *CompositeFS {
+	return newCompositeFS(true, filesystems...)
+}
+
+func newCompositeFS(bestEffort bool, filesystems ...fs.FS) *CompositeFS {
 	fsList := make([]fs.FS, len(filesystems))
 	copy(fsList, filesystems)
 	return &CompositeFS{
 		filesystems: fsList,
+		bestEffort:  bestEffort,
 	}
 }
 
@@ -38,18 +50,20 @@ func (cfs *CompositeFS) Open(name string) (fs.File, error) {
 			return file, nil
 		}
 
-		if !errors.Is(err, fs.ErrNotExist) {
-			allNotExist = false
+		if errors.Is(err, fs.ErrNotExist) {
+			errs = append(errs, fmt.Errorf("filesystem %d: %w", i, err))
+			continue
 		}
-		errs = append(errs, fmt.Errorf("filesystem %d: %w", i, err))
+
+		allNotExist = false
+		wrapped := fmt.Errorf("filesystem %d: %w", i, err)
+		if !cfs.bestEffort {
+			return nil, wrapped
+		}
+		errs = append(errs, wrapped)
 	}
 
-	joined := errors.Join(errs...)
-	if allNotExist {
-		return nil, fmt.Errorf("%w: file %q not found in any filesystem: %v", fs.ErrNotExist, name, joined)
-	}
-
-	return nil, fmt.Errorf("file %q not found in any filesystem: %v", name, joined)
+	return nil, notFoundError("file", name, errs, allNotExist)
 }
 
 // ReadDir returns the contents of the named directory from the
@@ -61,43 +75,38 @@ func (cfs *CompositeFS) ReadDir(name string) ([]fs.DirEntry, error) {
 	// we merge directory entries from all filesystems
 	var allEntries = make(map[string]fs.DirEntry)
 	var foundAny bool
+	var errs []error
+	allNotExist := true
 
-	for _, fsys := range cfs.filesystems {
-		if rdfs, ok := fsys.(fs.ReadDirFS); ok {
-			entries, err := rdfs.ReadDir(name)
-			if err == nil {
-				foundAny = true
-				// later filesystems dont override earlier ones
-				for _, entry := range entries {
-					if _, exists := allEntries[entry.Name()]; !exists {
-						allEntries[entry.Name()] = entry
-					}
+	for i, fsys := range cfs.filesystems {
+		entries, err := ReadDir(fsys, name)
+		if err == nil {
+			foundAny = true
+			allNotExist = false
+			// later filesystems dont override earlier ones
+			for _, entry := range entries {
+				if _, exists := allEntries[entry.Name()]; !exists {
+					allEntries[entry.Name()] = entry
 				}
 			}
-		} else {
-			// fallback to manual directory opening
-			dir, err := fsys.Open(name)
-			if err == nil {
-				foundAny = true
-				if dirFile, ok := dir.(fs.ReadDirFile); ok {
-					entries, err := dirFile.ReadDir(-1)
-					dir.Close()
-					if err == nil {
-						for _, entry := range entries {
-							if _, exists := allEntries[entry.Name()]; !exists {
-								allEntries[entry.Name()] = entry
-							}
-						}
-					}
-				} else {
-					dir.Close()
-				}
-			}
+			continue
 		}
+
+		if errors.Is(err, fs.ErrNotExist) {
+			errs = append(errs, fmt.Errorf("filesystem %d: %w", i, err))
+			continue
+		}
+
+		allNotExist = false
+		wrapped := fmt.Errorf("filesystem %d: %w", i, err)
+		if !cfs.bestEffort {
+			return nil, wrapped
+		}
+		errs = append(errs, wrapped)
 	}
 
 	if !foundAny {
-		return nil, fmt.Errorf("directory %q not found in any filesystem", name)
+		return nil, notFoundError("directory", name, errs, allNotExist)
 	}
 
 	result := make([]fs.DirEntry, 0, len(allEntries))
@@ -113,13 +122,29 @@ func (cfs *CompositeFS) ReadDir(name string) ([]fs.DirEntry, error) {
 func (cfs *CompositeFS) Stat(name string) (fs.FileInfo, error) {
 	name = path.Clean(name)
 
-	for _, fsys := range cfs.filesystems {
+	var errs []error
+	allNotExist := true
+
+	for i, fsys := range cfs.filesystems {
 		// fs implements StatFS
 		if statFS, ok := fsys.(fs.StatFS); ok {
 			info, err := statFS.Stat(name)
 			if err == nil {
 				return info, nil
 			}
+
+			if errors.Is(err, fs.ErrNotExist) {
+				errs = append(errs, fmt.Errorf("filesystem %d: %w", i, err))
+				continue
+			}
+
+			allNotExist = false
+			wrapped := fmt.Errorf("filesystem %d: %w", i, err)
+			if !cfs.bestEffort {
+				return nil, wrapped
+			}
+			errs = append(errs, wrapped)
+			continue
 		} else {
 			// fallback to Open + Stat
 			file, err := fsys.Open(name)
@@ -129,11 +154,36 @@ func (cfs *CompositeFS) Stat(name string) (fs.FileInfo, error) {
 				if err == nil {
 					return info, nil
 				}
+
+				if errors.Is(err, fs.ErrNotExist) {
+					errs = append(errs, fmt.Errorf("filesystem %d: %w", i, err))
+					continue
+				}
+
+				allNotExist = false
+				wrapped := fmt.Errorf("filesystem %d: %w", i, err)
+				if !cfs.bestEffort {
+					return nil, wrapped
+				}
+				errs = append(errs, wrapped)
+				continue
 			}
+
+			if errors.Is(err, fs.ErrNotExist) {
+				errs = append(errs, fmt.Errorf("filesystem %d: %w", i, err))
+				continue
+			}
+
+			allNotExist = false
+			wrapped := fmt.Errorf("filesystem %d: %w", i, err)
+			if !cfs.bestEffort {
+				return nil, wrapped
+			}
+			errs = append(errs, wrapped)
 		}
 	}
 
-	return nil, fmt.Errorf("file %q not found in any filesystem", name)
+	return nil, notFoundError("file", name, errs, allNotExist)
 }
 
 // Sub returns a new CompositeFS rooted at dir in each of the
@@ -142,8 +192,10 @@ func (cfs *CompositeFS) Sub(dir string) (fs.FS, error) {
 	dir = path.Clean(dir)
 
 	subFSList := make([]fs.FS, 0, len(cfs.filesystems))
+	var errs []error
+	allNotExist := true
 
-	for _, fsys := range cfs.filesystems {
+	for i, fsys := range cfs.filesystems {
 		// fs implements SubFS
 		if subber, ok := fsys.(interface {
 			Sub(dir string) (fs.FS, error)
@@ -151,15 +203,29 @@ func (cfs *CompositeFS) Sub(dir string) (fs.FS, error) {
 			subFS, err := subber.Sub(dir)
 			if err == nil {
 				subFSList = append(subFSList, subFS)
+				allNotExist = false
+				continue
 			}
+
+			if errors.Is(err, fs.ErrNotExist) {
+				errs = append(errs, fmt.Errorf("filesystem %d: %w", i, err))
+				continue
+			}
+
+			allNotExist = false
+			wrapped := fmt.Errorf("filesystem %d: %w", i, err)
+			if !cfs.bestEffort {
+				return nil, wrapped
+			}
+			errs = append(errs, wrapped)
 		}
 	}
 
 	if len(subFSList) == 0 {
-		return nil, fmt.Errorf("directory %q not found in any filesystem", dir)
+		return nil, notFoundError("directory", dir, errs, allNotExist)
 	}
 
-	return NewCompositeFS(subFSList...), nil
+	return newCompositeFS(cfs.bestEffort, subFSList...), nil
 }
 
 // ReadFile reads the named file from the first filesystem that
@@ -167,7 +233,10 @@ func (cfs *CompositeFS) Sub(dir string) (fs.FS, error) {
 func (cfs *CompositeFS) ReadFile(name string) ([]byte, error) {
 	name = path.Clean(name)
 
-	for _, fsys := range cfs.filesystems {
+	var errs []error
+	allNotExist := true
+
+	for i, fsys := range cfs.filesystems {
 		// fs implements ReadFileFS
 		if rfFS, ok := fsys.(interface {
 			ReadFile(name string) ([]byte, error)
@@ -176,20 +245,58 @@ func (cfs *CompositeFS) ReadFile(name string) ([]byte, error) {
 			if err == nil {
 				return data, nil
 			}
-		} else {
-			// fallback to manual file reading
-			file, err := fsys.Open(name)
-			if err == nil {
-				data, err := io.ReadAll(file)
-				file.Close()
-				if err == nil {
-					return data, nil
-				}
+
+			if errors.Is(err, fs.ErrNotExist) {
+				errs = append(errs, fmt.Errorf("filesystem %d: %w", i, err))
+				continue
 			}
+
+			allNotExist = false
+			wrapped := fmt.Errorf("filesystem %d: %w", i, err)
+			if !cfs.bestEffort {
+				return nil, wrapped
+			}
+			errs = append(errs, wrapped)
+			continue
 		}
+
+		// fallback to manual file reading
+		file, err := fsys.Open(name)
+		if err == nil {
+			data, err := io.ReadAll(file)
+			file.Close()
+			if err == nil {
+				return data, nil
+			}
+
+			if errors.Is(err, fs.ErrNotExist) {
+				errs = append(errs, fmt.Errorf("filesystem %d: %w", i, err))
+				continue
+			}
+
+			allNotExist = false
+			wrapped := fmt.Errorf("filesystem %d: %w", i, err)
+			if !cfs.bestEffort {
+				return nil, wrapped
+			}
+			errs = append(errs, wrapped)
+			continue
+		}
+
+		if errors.Is(err, fs.ErrNotExist) {
+			errs = append(errs, fmt.Errorf("filesystem %d: %w", i, err))
+			continue
+		}
+
+		allNotExist = false
+		wrapped := fmt.Errorf("filesystem %d: %w", i, err)
+		if !cfs.bestEffort {
+			return nil, wrapped
+		}
+		errs = append(errs, wrapped)
 	}
 
-	return nil, fmt.Errorf("file %q not found in any filesystem", name)
+	return nil, notFoundError("file", name, errs, allNotExist)
 }
 
 // ReadDir is a helper function to read a directory's contents from an fs.FS
@@ -222,4 +329,15 @@ func Sub(fsys fs.FS, dir string) (fs.FS, error) {
 	}
 
 	return nil, &fs.PathError{Op: "sub", Path: dir, Err: fs.ErrInvalid}
+}
+
+func notFoundError(kind, name string, errs []error, allNotExist bool) error {
+	message := fmt.Sprintf("%s %q not found in any filesystem", kind, name)
+	if len(errs) > 0 {
+		message = fmt.Sprintf("%s: %v", message, errors.Join(errs...))
+	}
+	if allNotExist {
+		return fmt.Errorf("%w: %s", fs.ErrNotExist, message)
+	}
+	return errors.New(message)
 }
