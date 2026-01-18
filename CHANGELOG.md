@@ -1,5 +1,25 @@
 # Changelog
 
+# [0.2.0](https://github.com/goliatone/go-composite-fs/compare/v0.1.0...v0.2.0) - (2026-01-18)
+
+## <!-- 13 -->📦 Bumps
+
+- Bump version: v0.2.0 ([70d9ab1](https://github.com/goliatone/go-composite-fs/commit/70d9ab19f1d514b46bffe20ad1865626c39cd673))  - (goliatone)
+
+## <!-- 16 -->➕ Add
+
+- Best effor mode ([c3d577a](https://github.com/goliatone/go-composite-fs/commit/c3d577ada92b2ce1a710e562f05b4cda98409c3f))  - (goliatone)
+- Updated to wrap fs.ErrNoExists only when every underlying fsdoes ([4edfce1](https://github.com/goliatone/go-composite-fs/commit/4edfce14c92d87c2232994f243da4020eef26b2d))  - (goliatone)
+
+## <!-- 3 -->📚 Documentation
+
+- Update changelog for v0.1.0 ([1618a47](https://github.com/goliatone/go-composite-fs/commit/1618a474d4d6e20d6aba4605cbc4c996414d3aed))  - (goliatone)
+
+## <!-- 7 -->⚙️ Miscellaneous Tasks
+
+- Update readme ([6dab6fa](https://github.com/goliatone/go-composite-fs/commit/6dab6fa4f759332b3aa12cc6075eedd5c577f77f))  - (goliatone)
+- Update tests ([5ad3107](https://github.com/goliatone/go-composite-fs/commit/5ad31074b8694b698c8bbf2b62c9c3471388e11f))  - (goliatone)
+
 # [0.1.0](https://github.com/goliatone/go-composite-fs/compare/v0.0.1...v0.1.0) - (2026-01-18)
 
 ## <!-- 1 -->🐛 Bug Fixes
