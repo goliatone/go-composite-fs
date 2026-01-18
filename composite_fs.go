@@ -6,6 +6,7 @@ import (
 	"io"
 	"io/fs"
 	"path"
+	"time"
 )
 
 // CompositeFS implements fs.FS by checking multiple underlying filesystems in order.
@@ -14,32 +15,44 @@ import (
 type CompositeFS struct {
 	filesystems []fs.FS
 	bestEffort  bool
+	mergeDirs   bool
 }
 
 // NewCompositeFS creates a new CompositeFS with the given filesystems.
 // Filesystems will be checked in the order they are provided.
 func NewCompositeFS(filesystems ...fs.FS) *CompositeFS {
-	return newCompositeFS(false, filesystems...)
+	return newCompositeFS(false, false, filesystems...)
 }
 
 // NewCompositeFSBestEffort creates a CompositeFS that keeps searching
 // other filesystems even when a filesystem returns non-ErrNotExist errors.
 func NewCompositeFSBestEffort(filesystems ...fs.FS) *CompositeFS {
-	return newCompositeFS(true, filesystems...)
+	return newCompositeFS(true, false, filesystems...)
 }
 
-func newCompositeFS(bestEffort bool, filesystems ...fs.FS) *CompositeFS {
+// NewOverlayFS creates a CompositeFS that merges directory entries
+// across all filesystems when opening a directory.
+func NewOverlayFS(filesystems ...fs.FS) *CompositeFS {
+	return newCompositeFS(false, true, filesystems...)
+}
+
+func newCompositeFS(bestEffort bool, mergeDirs bool, filesystems ...fs.FS) *CompositeFS {
 	fsList := make([]fs.FS, len(filesystems))
 	copy(fsList, filesystems)
 	return &CompositeFS{
 		filesystems: fsList,
 		bestEffort:  bestEffort,
+		mergeDirs:   mergeDirs,
 	}
 }
 
 // Open implements fs.FS.Open by trying each underlying filesystem in order.
 func (cfs *CompositeFS) Open(name string) (fs.File, error) {
 	name = path.Clean(name)
+
+	if cfs.mergeDirs {
+		return cfs.openOverlay(name)
+	}
 
 	var errs []error
 	allNotExist := true
@@ -66,9 +79,111 @@ func (cfs *CompositeFS) Open(name string) (fs.File, error) {
 	return nil, notFoundError("file", name, errs, allNotExist)
 }
 
-// ReadDir returns the contents of the named directory from the
-// first filesystem that successfully opens it.
-// This implements a custom directory listing capability.
+func (cfs *CompositeFS) openOverlay(name string) (fs.File, error) {
+	var errs []error
+	allNotExist := true
+	var foundDir bool
+	var dirInfo fs.FileInfo
+	var entries []fs.DirEntry
+	var seen map[string]struct{}
+	var foundAnyDirRead bool
+
+	for i, fsys := range cfs.filesystems {
+		file, err := fsys.Open(name)
+		if err == nil {
+			info, statErr := file.Stat()
+			if statErr != nil {
+				file.Close()
+				if errors.Is(statErr, fs.ErrNotExist) {
+					errs = append(errs, fmt.Errorf("filesystem %d: %w", i, statErr))
+					continue
+				}
+
+				allNotExist = false
+				wrapped := fmt.Errorf("filesystem %d: %w", i, statErr)
+				if !cfs.bestEffort {
+					return nil, wrapped
+				}
+				errs = append(errs, wrapped)
+				continue
+			}
+
+			if info.IsDir() {
+				foundDir = true
+				if dirInfo == nil {
+					dirInfo = info
+				}
+				file.Close()
+
+				dirEntries, err := ReadDir(fsys, name)
+				if err == nil {
+					foundAnyDirRead = true
+					allNotExist = false
+					if seen == nil {
+						seen = make(map[string]struct{})
+					}
+					for _, entry := range dirEntries {
+						if _, exists := seen[entry.Name()]; exists {
+							continue
+						}
+						seen[entry.Name()] = struct{}{}
+						entries = append(entries, entry)
+					}
+					continue
+				}
+
+				if errors.Is(err, fs.ErrNotExist) {
+					errs = append(errs, fmt.Errorf("filesystem %d: %w", i, err))
+					continue
+				}
+
+				allNotExist = false
+				wrapped := fmt.Errorf("filesystem %d: %w", i, err)
+				if !cfs.bestEffort {
+					return nil, wrapped
+				}
+				errs = append(errs, wrapped)
+				continue
+			}
+
+			if foundDir {
+				allNotExist = false
+				file.Close()
+				continue
+			}
+
+			return file, nil
+		}
+
+		if errors.Is(err, fs.ErrNotExist) {
+			errs = append(errs, fmt.Errorf("filesystem %d: %w", i, err))
+			continue
+		}
+
+		allNotExist = false
+		wrapped := fmt.Errorf("filesystem %d: %w", i, err)
+		if !cfs.bestEffort {
+			return nil, wrapped
+		}
+		errs = append(errs, wrapped)
+	}
+
+	if foundAnyDirRead {
+		return &overlayDirFile{
+			name:    name,
+			info:    dirInfo,
+			entries: entries,
+		}, nil
+	}
+
+	if foundDir {
+		return nil, notFoundError("directory", name, errs, allNotExist)
+	}
+
+	return nil, notFoundError("file", name, errs, allNotExist)
+}
+
+// ReadDir returns the merged contents of the named directory across all filesystems.
 func (cfs *CompositeFS) ReadDir(name string) ([]fs.DirEntry, error) {
 	name = path.Clean(name)
 
@@ -225,7 +340,7 @@ func (cfs *CompositeFS) Sub(dir string) (fs.FS, error) {
 		return nil, notFoundError("directory", dir, errs, allNotExist)
 	}
 
-	return newCompositeFS(cfs.bestEffort, subFSList...), nil
+	return newCompositeFS(cfs.bestEffort, cfs.mergeDirs, subFSList...), nil
 }
 
 // ReadFile reads the named file from the first filesystem that
@@ -341,3 +456,62 @@ func notFoundError(kind, name string, errs []error, allNotExist bool) error {
 	}
 	return errors.New(message)
 }
+
+type overlayDirFile struct {
+	name    string
+	info    fs.FileInfo
+	entries []fs.DirEntry
+	pos     int
+}
+
+func (f *overlayDirFile) Stat() (fs.FileInfo, error) {
+	if f.info != nil {
+		return f.info, nil
+	}
+	return dirInfo{name: path.Base(f.name)}, nil
+}
+
+func (f *overlayDirFile) Read(b []byte) (int, error) {
+	return 0, &fs.PathError{Op: "read", Path: f.name, Err: fs.ErrInvalid}
+}
+
+func (f *overlayDirFile) Close() error {
+	return nil
+}
+
+func (f *overlayDirFile) ReadDir(n int) ([]fs.DirEntry, error) {
+	if n <= 0 {
+		if f.pos >= len(f.entries) {
+			return nil, nil
+		}
+		entries := f.entries[f.pos:]
+		f.pos = len(f.entries)
+		return entries, nil
+	}
+
+	if f.pos >= len(f.entries) {
+		return nil, io.EOF
+	}
+
+	end := f.pos + n
+	if end > len(f.entries) {
+		end = len(f.entries)
+	}
+	entries := f.entries[f.pos:end]
+	f.pos = end
+	if f.pos >= len(f.entries) {
+		return entries, io.EOF
+	}
+	return entries, nil
+}
+
+type dirInfo struct {
+	name string
+}
+
+func (d dirInfo) Name() string       { return d.name }
+func (d dirInfo) Size() int64        { return 0 }
+func (d dirInfo) Mode() fs.FileMode  { return fs.ModeDir | 0o555 }
+func (d dirInfo) ModTime() time.Time { return time.Time{} }
+func (d dirInfo) IsDir() bool        { return true }
+func (d dirInfo) Sys() interface{}   { return nil }
