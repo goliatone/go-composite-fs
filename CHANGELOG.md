@@ -1,5 +1,23 @@
 # Changelog
 
+# [0.3.0](https://github.com/goliatone/go-composite-fs/compare/v0.2.0...v0.3.0) - (2026-01-18)
+
+## <!-- 13 -->📦 Bumps
+
+- Bump version: v0.3.0 ([b4e7022](https://github.com/goliatone/go-composite-fs/commit/b4e7022900fd5e5a1923f0a5e0f0f0a92301edd2))  - (goliatone)
+
+## <!-- 16 -->➕ Add
+
+- Overlay fs ([5cb36b0](https://github.com/goliatone/go-composite-fs/commit/5cb36b03308bdb73a83f51373a798028f1a123cb))  - (goliatone)
+
+## <!-- 3 -->📚 Documentation
+
+- Update changelog for v0.2.0 ([78c912a](https://github.com/goliatone/go-composite-fs/commit/78c912a2d54531b50e5b845927381883fda18602))  - (goliatone)
+
+## <!-- 7 -->⚙️ Miscellaneous Tasks
+
+- Update readme ([5e4d344](https://github.com/goliatone/go-composite-fs/commit/5e4d344aa7c7fddf655b6b95cba79ac688bf12e7))  - (goliatone)
+
 # [0.2.0](https://github.com/goliatone/go-composite-fs/compare/v0.1.0...v0.2.0) - (2026-01-18)
 
 ## <!-- 13 -->📦 Bumps
