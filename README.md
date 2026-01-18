@@ -7,6 +7,7 @@
 - Combine multiple filesystems into a single `fs.FS` implementation
 - Prioritize files from different sources (first match wins)
 - Merge directory listings from all sources
+- Overlay mode that merges directories when opening them
 - Thread-safe for concurrent read operations
 - Compatible with standard library's `io/fs` interfaces
 - Helper functions for common operations (`ReadDir`, `Sub`)
@@ -177,6 +178,14 @@ func NewCompositeFSBestEffort(filesystems ...fs.FS) *CompositeFS
 ```
 
 `NewCompositeFSBestEffort` creates a `CompositeFS` that keeps searching other filesystems even when a filesystem returns non-`fs.ErrNotExist` errors.
+
+#### `NewOverlayFS`
+
+```go
+func NewOverlayFS(filesystems ...fs.FS) *CompositeFS
+```
+
+`NewOverlayFS` creates a `CompositeFS` that merges directory entries across all filesystems when opening a directory, while keeping file lookups first-wins.
 
 #### ReadDir
 
